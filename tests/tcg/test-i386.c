@@ -2327,12 +2327,22 @@ struct fpxstate {
     uint16_t fpus;
     uint16_t fptag;
     uint16_t fop;
-    uint32_t fpuip;
-    uint16_t cs_sel;
-    uint16_t dummy0;
-    uint32_t fpudp;
-    uint16_t ds_sel;
-    uint16_t dummy1;
+    union {
+        struct {
+            uint32_t fpuip;
+            uint16_t cs_sel;
+            uint16_t dummy0;
+        } mode_non_64_ins;
+        uint64_t mode_64_fpuip;
+    };
+    union {
+        struct {
+            uint32_t fpudp;
+            uint16_t ds_sel;
+            uint16_t dummy1;
+        } mode_non_64_data;
+        uint64_t mode_64_fpudp;
+    };
     uint32_t mxcsr;
     uint32_t mxcsr_mask;
     uint8_t fpregs1[8 * 16];
@@ -2342,6 +2352,7 @@ struct fpxstate {
 
 static struct fpxstate fpx_state __attribute__((aligned(16)));
 static struct fpxstate fpx_state2 __attribute__((aligned(16)));
+float fxsave_mem_operand;
 
 void test_fxsave(void)
 {
@@ -2362,6 +2373,7 @@ void test_fxsave(void)
         " fld1\n"
         " fldpi\n"
         " fldln2\n"
+        " fmul fxsave_mem_operand\n"
         " fxsave %0\n"
         " fxrstor %0\n"
         " fxsave %1\n"
@@ -2371,6 +2383,18 @@ void test_fxsave(void)
     printf("fpuc=%04x\n", fp->fpuc);
     printf("fpus=%04x\n", fp->fpus);
     printf("fptag=%04x\n", fp->fptag);
+#if defined(__x86_64__)
+    printf("fpuip=%04llx\n", (long long unsigned int) fp->mode_64_fpuip);
+#else
+    printf("fpuip=%04x\n", fp->mode_non_64_ins.fpuip);
+    printf("cs_sel=%04x\n", fp->mode_non_64_ins.cs_sel);
+#endif
+#if defined(__x86_64__)
+    printf("fpudp=%04llx\n", (long long unsigned int) fp->mode_64_fpudp);
+#else
+    printf("fpudp=%04x\n", fp->mode_non_64_data.fpudp);
+    printf("ds_sel=%04x\n", fp->mode_non_64_data.ds_sel);
+#endif
     for(i = 0; i < 3; i++) {
         printf("ST%d: " FMT64X " %04x\n",
                i,
@@ -2687,6 +2711,40 @@ void test_sse(void)
     printf("%-10s A=" FMTLX " R=" FMTLX ":" FMTLX "\n", #op, a, r, rh);  \
 }
 
+struct fnstate {
+    uint16_t fpuc;
+    uint16_t dummy0;
+    uint16_t fpus;
+    uint16_t dummy1;
+    uint16_t fptag;
+    uint16_t dummy2;
+    uint32_t fpuip;
+    uint16_t cs_sel;
+    uint16_t fop;
+    uint32_t fpudp;
+    uint16_t ds_sel;
+};
+
+static struct fnstate fn_state __attribute__((aligned(16)));
+float fnstenv_mem_operand;
+
+void test_fnstenv(void)
+{
+    struct fnstate *fp = &fn_state;
+
+    asm(" fld1\n"
+        " fmul fnstenv_mem_operand\n"
+        " fnstenv %0\n"
+        : "=m" (*(uint32_t *)fp) : );
+    printf("fpuc=%04x\n", fp->fpuc);
+    printf("fpus=%04x\n", fp->fpus);
+    printf("fptag=%04x\n", fp->fptag);
+    printf("fpuip=%04x\n", fp->fpuip);
+    printf("cs_sel=%04x\n", fp->cs_sel);
+    printf("fpudp=%04x\n", fp->fpudp);
+    printf("ds_sel=%04x\n", fp->ds_sel);
+}
+
 void test_conv(void)
 {
     TEST_CONV_RAX(cbw);
@@ -2757,6 +2815,7 @@ int main(int argc, char **argv)
 #endif
     test_enter();
     test_conv();
+    test_fnstenv();
 #ifdef TEST_SSE
     test_sse();
     test_fxsave();
