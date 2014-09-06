@@ -690,6 +690,24 @@ typedef enum {
     CC_OP_NB,
 } CCOp;
 
+typedef enum {
+    B8     = 0,
+    B16    = 1,
+    B32    = 2,
+    B64    = 3,
+    BSIZE  = 3,   /* Mask for the above.  */
+    
+    RM     = 4,
+    PM     = 8,
+
+    PM32   = PM | B32,
+    PM16   = PM | B16,
+    RM32   = RM | B32,
+    RM16   = RM | B16,
+} OMode;
+
+#define TO_OMODE(bsize, is_pm) ((bsize & BSIZE) | (1 << (is_pm ? 3 : 2)))
+
 typedef struct SegmentCache {
     uint32_t selector;
     target_ulong base;
@@ -821,10 +839,11 @@ typedef struct CPUX86State {
     uint16_t fpuc;
     uint8_t fptags[8];   /* 0 = valid, 1 = empty */
     FPReg fpregs[8];
-    /* KVM-only so far */
-    uint16_t fpop;
+    uint32_t fpop;
     uint64_t fpip;
     uint64_t fpdp;
+    uint32_t fpcs;
+    uint32_t fpds;
 
     /* emulator internal variables */
     float_status fp_status;
