@@ -56,6 +56,8 @@
 #define floatx80_l2e make_floatx80(0x3fff, 0xb8aa3b295c17f0bcLL)
 #define floatx80_l2t make_floatx80(0x4000, 0xd49a784bcd1b8afeLL)
 
+#define FPUS(env) ((env->fpus & ~0x3800) | ((env->fpstt & 0x7) << 11))
+
 static inline void fpush(CPUX86State *env)
 {
     env->fpstt = (env->fpstt - 1) & 7;
@@ -603,6 +605,10 @@ void helper_fninit(CPUX86State *env)
     env->fptags[5] = 1;
     env->fptags[6] = 1;
     env->fptags[7] = 1;
+    env->fpip = 0;
+    env->fpcs = 0;
+    env->fpdp = 0;
+    env->fpds = 0;
 }
 
 /* BCD ops */
@@ -960,13 +966,12 @@ void helper_fxam_ST0(CPUX86State *env)
     }
 }
 
-void helper_fstenv(CPUX86State *env, target_ulong ptr, int data32)
+void helper_fstenv(CPUX86State *env, target_ulong ptr, int omode)
 {
-    int fpus, fptag, exp, i;
+    int fptag, exp, i;
     uint64_t mant;
     CPU_LDoubleU tmp;
 
-    fpus = (env->fpus & ~0x3800) | (env->fpstt & 0x7) << 11;
     fptag = 0;
     for (i = 7; i >= 0; i--) {
         fptag <<= 2;
@@ -986,83 +991,149 @@ void helper_fstenv(CPUX86State *env, target_ulong ptr, int data32)
             }
         }
     }
-    if (data32) {
+
+    if ((omode & BSIZE) == B32) {
         /* 32 bit */
-        cpu_stl_data(env, ptr, env->fpuc);
-        cpu_stl_data(env, ptr + 4, fpus);
-        cpu_stl_data(env, ptr + 8, fptag);
-        cpu_stl_data(env, ptr + 12, 0); /* fpip */
-        cpu_stl_data(env, ptr + 16, 0); /* fpcs */
-        cpu_stl_data(env, ptr + 20, 0); /* fpoo */
-        cpu_stl_data(env, ptr + 24, 0); /* fpos */
+        cpu_stw_data(env, ptr, env->fpuc);
+        cpu_stw_data(env, ptr + 4, FPUS(env));
+        cpu_stw_data(env, ptr + 8, fptag);
+        if (omode & PM) {
+            /* Protected mode */
+            cpu_stl_data(env, ptr + 12, env->fpip);
+            cpu_stl_data(env, ptr + 16,
+                        ((env->fpop & 0x7ff) << 16) | (env->fpcs & 0xffff));
+            cpu_stl_data(env, ptr + 20, env->fpdp);
+            cpu_stl_data(env, ptr + 24, env->fpds);
+        } else {
+            /* Real mode  */
+            cpu_stl_data(env, ptr + 12, env->fpip); /* fpip[15..00] */
+            cpu_stl_data(env, ptr + 16, ((((env->fpip >> 16) & 0xffff) << 12) |
+                        (env->fpop & 0x7ff))); /* fpip[31..16], fpop */
+            cpu_stl_data(env, ptr + 20, env->fpdp); /* fpdp[15..00] */
+            cpu_stl_data(env, ptr + 24,
+                        (env->fpdp >> 4) & 0xffff000); /* fpdp[31..16] */
+        }
     } else {
         /* 16 bit */
         cpu_stw_data(env, ptr, env->fpuc);
-        cpu_stw_data(env, ptr + 2, fpus);
+        cpu_stw_data(env, ptr + 2, FPUS(env));
         cpu_stw_data(env, ptr + 4, fptag);
-        cpu_stw_data(env, ptr + 6, 0);
-        cpu_stw_data(env, ptr + 8, 0);
-        cpu_stw_data(env, ptr + 10, 0);
-        cpu_stw_data(env, ptr + 12, 0);
+        if (omode & PM) {
+            /* Protected mode */
+            cpu_stw_data(env, ptr + 6, env->fpip);
+            cpu_stw_data(env, ptr + 8, env->fpcs);
+            cpu_stw_data(env, ptr + 10, env->fpdp);
+            cpu_stw_data(env, ptr + 12, env->fpds);
+        } else {
+            /* Real mode  */
+            cpu_stw_data(env, ptr + 6, env->fpip); /* fpip[15..0] */
+            cpu_stw_data(env, ptr + 8, ((env->fpip >> 4) & 0xf000) |
+                        (env->fpop & 0x7ff)); /* fpip[19..16], fpop */
+            cpu_stw_data(env, ptr + 10, env->fpdp); /* fpdp[15..0] */
+            cpu_stw_data(env, ptr + 12,
+                        (env->fpdp >> 4) & 0xf000); /* fpdp[19..16] */
+        }
     }
+
+    env->fpip = 0;
+    env->fpcs = 0;
+    env->fpdp = 0;
+    env->fpds = 0;
 }
 
-void helper_fldenv(CPUX86State *env, target_ulong ptr, int data32)
+void helper_fldenv(CPUX86State *env, target_ulong ptr, int omode)
 {
-    int i, fpus, fptag;
+    int tmp, i, fpus, fptag;
 
-    if (data32) {
+    if ((omode & BSIZE) == B32) {
+        /* 32 bit */
         cpu_set_fpuc(env, cpu_lduw_data(env, ptr));
         fpus = cpu_lduw_data(env, ptr + 4);
         fptag = cpu_lduw_data(env, ptr + 8);
+        if (omode & PM) {
+            env->fpip = cpu_ldl_data(env, ptr + 12);
+            tmp = cpu_ldl_data(env, ptr + 16);
+            env->fpcs = tmp & 0xffff;
+            env->fpop = tmp >> 16;
+            env->fpdp = cpu_ldl_data(env, ptr + 20);
+            env->fpds = cpu_lduw_data(env, ptr + 24);
+        } else {
+            /* Real mode */
+            tmp = cpu_ldl_data(env, ptr + 16);
+            env->fpip = ((tmp & 0xffff000) << 4) |
+                        cpu_lduw_data(env, ptr + 12);
+            env->fpop = tmp & 0x7ff;
+            env->fpdp = (cpu_ldl_data(env, ptr + 24) << 4) |
+                        cpu_lduw_data(env, ptr + 20);
+        }
     } else {
+        /* 16 bit */
         cpu_set_fpuc(env, cpu_lduw_data(env, ptr));
         fpus = cpu_lduw_data(env, ptr + 2);
         fptag = cpu_lduw_data(env, ptr + 4);
+        if (omode & PM) {
+            /* Protected mode  */
+            env->fpip = cpu_lduw_data(env, ptr + 6);
+            env->fpcs = cpu_lduw_data(env, ptr + 8);
+            env->fpdp = cpu_lduw_data(env, ptr + 10);
+            env->fpds = cpu_lduw_data(env, ptr + 12);
+        } else {
+            /* Real mode  */
+            tmp = cpu_lduw_data(env, ptr + 8);
+            env->fpip = ((tmp & 0xf000) << 4) | cpu_lduw_data(env, ptr + 6);
+            env->fpop = tmp & 0x7ff;
+            env->fpdp = cpu_lduw_data(env, ptr + 12) << 4 |
+                        cpu_lduw_data(env, ptr + 10);
+        }
     }
+
     env->fpstt = (fpus >> 11) & 7;
     env->fpus = fpus & ~0x3800;
     for (i = 0; i < 8; i++) {
         env->fptags[i] = ((fptag & 3) == 3);
         fptag >>= 2;
     }
+
+    env->fpip &= 0xffffffff;
+    env->fpdp &= 0xffffffff;
+    if (!(omode & PM)) {
+        env->fpcs = 0;
+        env->fpds = 0;
+    }
 }
 
-void helper_fsave(CPUX86State *env, target_ulong ptr, int data32)
+void helper_fsave(CPUX86State *env, target_ulong ptr, int omode)
 {
     floatx80 tmp;
     int i;
 
-    helper_fstenv(env, ptr, data32);
+    helper_fstenv(env, ptr, omode);
 
-    ptr += (14 << data32);
+    if ((omode & BSIZE) == B32) {
+        ptr += 28;
+    } else {
+        ptr += 14;
+    }
     for (i = 0; i < 8; i++) {
         tmp = ST(i);
         helper_fstt(env, tmp, ptr);
         ptr += 10;
     }
 
-    /* fninit */
-    env->fpus = 0;
-    env->fpstt = 0;
-    cpu_set_fpuc(env, 0x37f);
-    env->fptags[0] = 1;
-    env->fptags[1] = 1;
-    env->fptags[2] = 1;
-    env->fptags[3] = 1;
-    env->fptags[4] = 1;
-    env->fptags[5] = 1;
-    env->fptags[6] = 1;
-    env->fptags[7] = 1;
+    helper_fninit(env);
 }
 
-void helper_frstor(CPUX86State *env, target_ulong ptr, int data32)
+void helper_frstor(CPUX86State *env, target_ulong ptr, int omode)
 {
     floatx80 tmp;
     int i;
 
-    helper_fldenv(env, ptr, data32);
-    ptr += (14 << data32);
+    helper_fldenv(env, ptr, omode);
+    if ((omode & BSIZE) == B32) {
+        ptr += 28;
+    } else {
+        ptr += 14;
+    }
 
     for (i = 0; i < 8; i++) {
         tmp = helper_fldt(env, ptr);
@@ -1071,21 +1142,22 @@ void helper_frstor(CPUX86State *env, target_ulong ptr, int data32)
     }
 }
 
-#if defined(CONFIG_USER_ONLY)
-void cpu_x86_fsave(CPUX86State *env, target_ulong ptr, int data32)
+#if defined(CONFIG_USER_ONLY) && defined(TARGET_I386) && TARGET_ABI_BITS == 32
+
+void cpu_x86_fsave(CPUX86State *env, target_ulong ptr)
 {
-    helper_fsave(env, ptr, data32);
+    helper_fsave(env, ptr, TO_OMODE(B32, 1));
 }
 
-void cpu_x86_frstor(CPUX86State *env, target_ulong ptr, int data32)
+void cpu_x86_frstor(CPUX86State *env, target_ulong ptr)
 {
-    helper_frstor(env, ptr, data32);
+    helper_frstor(env, ptr, TO_OMODE(B32, 1));
 }
 #endif
 
-void helper_fxsave(CPUX86State *env, target_ulong ptr, int data64)
+void helper_fxsave(CPUX86State *env, target_ulong ptr, int dsize)
 {
-    int fpus, fptag, i, nb_xmm_regs;
+    int i, nb_xmm_regs, fptag;
     floatx80 tmp;
     target_ulong addr;
 
@@ -1094,25 +1166,36 @@ void helper_fxsave(CPUX86State *env, target_ulong ptr, int data64)
         raise_exception(env, EXCP0D_GPF);
     }
 
-    fpus = (env->fpus & ~0x3800) | (env->fpstt & 0x7) << 11;
     fptag = 0;
     for (i = 0; i < 8; i++) {
         fptag |= (env->fptags[i] << i);
     }
+    fptag ^= 0xff;
+
     cpu_stw_data(env, ptr, env->fpuc);
-    cpu_stw_data(env, ptr + 2, fpus);
-    cpu_stw_data(env, ptr + 4, fptag ^ 0xff);
+    cpu_stw_data(env, ptr + 2, FPUS(env));
+    cpu_stw_data(env, ptr + 4, fptag & 0xff);
+    cpu_stw_data(env, ptr + 6, env->fpop);
+
 #ifdef TARGET_X86_64
-    if (data64) {
-        cpu_stq_data(env, ptr + 0x08, 0); /* rip */
-        cpu_stq_data(env, ptr + 0x10, 0); /* rdp */
+    if (dsize == B64) {
+        /* 64 bit */
+        cpu_stq_data(env, ptr + 8, env->fpip);
+        cpu_stq_data(env, ptr + 16, env->fpdp);
     } else
 #endif
     {
-        cpu_stl_data(env, ptr + 0x08, 0); /* eip */
-        cpu_stl_data(env, ptr + 0x0c, 0); /* sel  */
-        cpu_stl_data(env, ptr + 0x10, 0); /* dp */
-        cpu_stl_data(env, ptr + 0x14, 0); /* sel  */
+        if (dsize == B32) {
+            /* 32 bit */
+            cpu_stl_data(env, ptr + 8, env->fpip);
+            cpu_stl_data(env, ptr + 16, env->fpdp);
+        } else {
+            /* 16 bit */
+            cpu_stw_data(env, ptr + 8, env->fpip);
+            cpu_stw_data(env, ptr + 16, env->fpdp);
+        }
+        cpu_stw_data(env, ptr + 12, env->fpcs & 0xffff);
+        cpu_stw_data(env, ptr + 20, env->fpds & 0xffff);
     }
 
     addr = ptr + 0x20;
@@ -1145,7 +1228,7 @@ void helper_fxsave(CPUX86State *env, target_ulong ptr, int data64)
     }
 }
 
-void helper_fxrstor(CPUX86State *env, target_ulong ptr, int data64)
+void helper_fxrstor(CPUX86State *env, target_ulong ptr, int dsize)
 {
     int i, fpus, fptag, nb_xmm_regs;
     floatx80 tmp;
@@ -1164,6 +1247,30 @@ void helper_fxrstor(CPUX86State *env, target_ulong ptr, int data64)
     fptag ^= 0xff;
     for (i = 0; i < 8; i++) {
         env->fptags[i] = ((fptag >> i) & 1);
+    }
+
+    env->fpop = (cpu_lduw_data(env, ptr + 6) >> 5) & 0x7ff;
+
+#ifdef TARGET_X86_64
+    if (dsize == B64) {
+        /* 64 bit */
+        env->fpip = cpu_ldq_data(env, ptr + 8);
+        env->fpdp = cpu_ldq_data(env, ptr + 16);
+    } else
+#endif
+    {
+        if (dsize == B32) {
+            /* 32 bit */
+            env->fpip = cpu_ldl_data(env, ptr + 8);
+            env->fpdp = cpu_ldl_data(env, ptr + 16);
+        } else {
+            /* 16 bit */
+            env->fpip = cpu_lduw_data(env, ptr + 8);
+            env->fpdp = cpu_lduw_data(env, ptr + 16);
+        }
+
+        env->fpcs = cpu_lduw_data(env, ptr + 12);
+        env->fpds = cpu_lduw_data(env, ptr + 20);
     }
 
     addr = ptr + 0x20;
@@ -1193,6 +1300,12 @@ void helper_fxrstor(CPUX86State *env, target_ulong ptr, int data64)
                 addr += 16;
             }
         }
+    }
+
+    if (dsize == B64) {
+        /* 64 bit */
+        env->fpip &= 0xffffffff;
+        env->fpdp &= 0xffffffff;
     }
 }
 

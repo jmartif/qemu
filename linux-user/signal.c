@@ -875,7 +875,7 @@ static void setup_sigcontext(struct target_sigcontext *sc,
     __put_user(env->regs[R_ESP], &sc->esp_at_signal);
     __put_user(env->segs[R_SS].selector, (unsigned int *)&sc->ss);
 
-        cpu_x86_fsave(env, fpstate_addr, 1);
+        cpu_x86_fsave(env, fpstate_addr);
         fpstate->status = fpstate->sw;
         magic = 0xffff;
     __put_user(magic, &fpstate->magic);
@@ -1078,7 +1078,7 @@ restore_sigcontext(CPUX86State *env, struct target_sigcontext *sc, int *peax)
                 if (!access_ok(VERIFY_READ, fpstate_addr, 
                                sizeof(struct target_fpstate)))
                         goto badframe;
-                cpu_x86_frstor(env, fpstate_addr, 1);
+                cpu_x86_frstor(env, fpstate_addr);
 	}
 
         *peax = tswapl(sc->eax);
