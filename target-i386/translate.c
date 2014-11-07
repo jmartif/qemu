@@ -62,8 +62,6 @@
 
 //#define MACRO_TEST   1
 #define IS_PROTECTED_MODE(s) (s->pe && !s->vm86)
-#define FP_EP_VALID 0x80000000
-#define FP_EP_INVALID 0
 
 /* global register indexes */
 static TCGv_ptr cpu_env;
@@ -71,11 +69,15 @@ static TCGv cpu_A0;
 static TCGv cpu_cc_dst, cpu_cc_src, cpu_cc_src2, cpu_cc_srcT;
 static TCGv_i32 cpu_cc_op;
 static TCGv cpu_regs[CPU_NB_REGS];
+
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
 static TCGv_i32 cpu_fpop;
 static TCGv cpu_fpip;
 static TCGv cpu_fpdp;
 static TCGv_i32 cpu_fpds;
 static TCGv_i32 cpu_fpcs;
+#endif
+
 /* local temps */
 static TCGv cpu_T[2];
 /* local register indexes (only used inside old micro ops) */
@@ -85,9 +87,6 @@ static TCGv_i32 cpu_tmp2_i32, cpu_tmp3_i32;
 static TCGv_i64 cpu_tmp1_i64;
 
 static uint8_t gen_opc_cc_op[OPC_BUF_SIZE];
-static uint16_t gen_opc_fp_op[OPC_BUF_SIZE];
-static uint16_t gen_opc_fp_cs[OPC_BUF_SIZE];
-static target_ulong gen_opc_fp_ip[OPC_BUF_SIZE];
 
 #include "exec/gen-icount.h"
 
@@ -118,10 +117,12 @@ typedef struct DisasContext {
     int ss32;   /* 32 bit stack segment */
     CCOp cc_op;  /* current CC operation */
     bool cc_op_dirty;
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     uint16_t fp_op;
     bool fp_ep_dirty;
     target_ulong fp_ip;
     uint16_t fp_cs;
+#endif
     int addseg; /* non zero if either DS/ES/SS have a non zero base */
     int f_st;   /* currently unused */
     int vm86;   /* vm86 mode */
@@ -226,6 +227,7 @@ static const uint8_t cc_op_live[CC_OP_NB] = {
     [CC_OP_CLR] = 0,
 };
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
 static inline bool instr_is_x87_nc(int modrm, int b)
 {
     int op, mod, rm;
@@ -281,6 +283,7 @@ static inline bool instr_is_x87_nc(int modrm, int b)
         return false;
     }
 }
+#endif
 
 static void set_cc_op(DisasContext *s, CCOp op)
 {
@@ -327,21 +330,26 @@ static void gen_update_cc_op(DisasContext *s)
     }
 }
 
-static void set_ep(DisasContext *s, int fp_op, int fp_ip, int fp_cs) {
-    s->fp_op = FP_EP_VALID | fp_op;
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
+static void set_ep(DisasContext *s, int fp_op, int fp_ip, int fp_cs)
+{
+    s->fp_op = fp_op;
     s->fp_ip = fp_ip;
     s->fp_cs = fp_cs;
     s->fp_ep_dirty = true;
 }
+#endif
 
 static void gen_update_ep(DisasContext *s)
 {
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     if (s->fp_ep_dirty) {
         tcg_gen_movi_i32(cpu_fpop, s->fp_op);
         tcg_gen_movi_tl(cpu_fpip, s->fp_ip);
         tcg_gen_movi_i32(cpu_fpcs, s->fp_cs);
         s->fp_ep_dirty = false;
     }
+#endif
 }
 
 #ifdef TARGET_X86_64
@@ -1965,7 +1973,9 @@ static void gen_lea_modrm(CPUX86State *env, DisasContext *s, int modrm, int b)
     int index;
     int scale;
     int mod, rm, code, override, must_add_seg;
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     int curr_instr_is_x87_nc;
+#endif
     TCGv sum;
 
     override = s->override;
@@ -2045,6 +2055,7 @@ static void gen_lea_modrm(CPUX86State *env, DisasContext *s, int modrm, int b)
             tcg_gen_addi_tl(cpu_A0, sum, disp);
         }
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
         curr_instr_is_x87_nc = instr_is_x87_nc(modrm, b);
         if (curr_instr_is_x87_nc) {
             tcg_gen_mov_tl(cpu_fpdp, cpu_A0);
@@ -2052,6 +2063,7 @@ static void gen_lea_modrm(CPUX86State *env, DisasContext *s, int modrm, int b)
                 tcg_gen_ext32u_tl(cpu_fpdp, cpu_fpdp);
             }
         }
+#endif
         if (must_add_seg) {
             if (override < 0) {
                 if (base == R_EBP || base == R_ESP) {
@@ -2064,10 +2076,12 @@ static void gen_lea_modrm(CPUX86State *env, DisasContext *s, int modrm, int b)
             tcg_gen_ld_tl(cpu_tmp0, cpu_env,
                           offsetof(CPUX86State, segs[override].base));
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
             if (curr_instr_is_x87_nc) {
                 tcg_gen_ld_i32(cpu_fpds, cpu_env,
                               offsetof(CPUX86State, segs[override].selector));
             }
+#endif
 
             if (CODE64(s)) {
                 if (s->aflag == MO_32) {
@@ -2079,10 +2093,12 @@ static void gen_lea_modrm(CPUX86State *env, DisasContext *s, int modrm, int b)
 
             tcg_gen_add_tl(cpu_A0, cpu_A0, cpu_tmp0);
         } else {
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
             if (curr_instr_is_x87_nc) {
                 tcg_gen_ld_i32(cpu_fpds, cpu_env,
                               offsetof(CPUX86State, segs[R_DS].selector));
             }
+#endif
         }
 
         if (s->aflag == MO_32) {
@@ -2152,20 +2168,24 @@ static void gen_lea_modrm(CPUX86State *env, DisasContext *s, int modrm, int b)
                     override = R_DS;
                 }
             }
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
             if (instr_is_x87_nc(modrm, b)) {
                 tcg_gen_mov_tl(cpu_fpdp, cpu_A0);
                 tcg_gen_ld_i32(cpu_fpds, cpu_env,
                               offsetof(CPUX86State, segs[override].selector));
             }
+#endif
             gen_op_addl_A0_seg(s, override);
         } else {
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
             if (instr_is_x87_nc(modrm, b)) {
                 tcg_gen_mov_tl(cpu_fpdp, cpu_A0);
                 tcg_gen_ld_i32(cpu_fpds, cpu_env,
                               offsetof(CPUX86State, segs[R_DS].selector));
             }
+#endif
         }
-#ifdef TARGET_X86_64
+#if defined(TARGET_X86_64) && defined(CONFIG_TCG_EXCEPTION_POINTERS)
         tcg_gen_andi_tl(cpu_fpdp, cpu_fpdp, 0xffffffff);
 #endif
         break;
@@ -4538,7 +4558,9 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
     int modrm, reg, rm, mod, op, opreg, val;
     target_ulong next_eip, tval;
     int rex_w, rex_r;
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     int fp_op, fp_ip, fp_cs;
+#endif
 
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_OP | CPU_LOG_TB_OP_OPT))) {
         tcg_gen_debug_insn_start(pc_start);
@@ -6356,12 +6378,14 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
                 goto illegal_op;
             }
         }
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
         if (instr_is_x87_nc(modrm, b)) {
             fp_op = ((b & 0x7) << 8) | (modrm & 0xff);
             fp_ip = pc_start - s->cs_base;
             fp_cs = env->segs[R_CS].selector;
             set_ep(s, fp_op, fp_ip, fp_cs);
         }
+#endif
         break;
         /************************/
         /* string ops */
@@ -8048,6 +8072,7 @@ void optimize_flags_init(void)
     cpu_cc_src2 = tcg_global_mem_new(TCG_AREG0, offsetof(CPUX86State, cc_src2),
                                      "cc_src2");
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     cpu_fpop = tcg_global_mem_new_i32(TCG_AREG0,
                                       offsetof(CPUX86State, fpop), "fpop");
     cpu_fpip = tcg_global_mem_new(TCG_AREG0, offsetof(CPUX86State, fpip),
@@ -8058,6 +8083,7 @@ void optimize_flags_init(void)
                                      "fpds");
     cpu_fpcs = tcg_global_mem_new_i32(TCG_AREG0, offsetof(CPUX86State, fpcs),
                                      "fpcs");
+#endif
 
     for (i = 0; i < CPU_NB_REGS; ++i) {
         cpu_regs[i] = tcg_global_mem_new(TCG_AREG0,
@@ -8103,8 +8129,9 @@ static inline void gen_intermediate_code_internal(X86CPU *cpu,
     dc->singlestep_enabled = cs->singlestep_enabled;
     dc->cc_op = CC_OP_DYNAMIC;
     dc->cc_op_dirty = false;
-    dc->fp_op = FP_EP_INVALID;
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     dc->fp_ep_dirty = false;
+#endif
     dc->cs_base = cs_base;
     dc->tb = tb;
     dc->popl_esp_hack = 0;
@@ -8178,9 +8205,6 @@ static inline void gen_intermediate_code_internal(X86CPU *cpu,
             }
             tcg_ctx.gen_opc_pc[lj] = pc_ptr;
             gen_opc_cc_op[lj] = dc->cc_op;
-            gen_opc_fp_op[lj] = dc->fp_op;
-            gen_opc_fp_ip[lj] = dc->fp_ip;
-            gen_opc_fp_cs[lj] = dc->fp_cs;
             tcg_ctx.gen_opc_instr_start[lj] = 1;
             tcg_ctx.gen_opc_icount[lj] = num_insns;
         }
@@ -8264,7 +8288,6 @@ void gen_intermediate_code_pc(CPUX86State *env, TranslationBlock *tb)
 void restore_state_to_opc(CPUX86State *env, TranslationBlock *tb, int pc_pos)
 {
     int cc_op;
-    uint16_t fp_op;
 #ifdef DEBUG_DISAS
     if (qemu_loglevel_mask(CPU_LOG_TB_OP)) {
         int i;
@@ -8284,10 +8307,4 @@ void restore_state_to_opc(CPUX86State *env, TranslationBlock *tb, int pc_pos)
     cc_op = gen_opc_cc_op[pc_pos];
     if (cc_op != CC_OP_DYNAMIC)
         env->cc_op = cc_op;
-    fp_op = gen_opc_fp_op[pc_pos];
-    if (fp_op & FP_EP_VALID) {
-        tcg_gen_movi_i32(cpu_fpop, fp_op);
-        tcg_gen_movi_tl(cpu_fpip, gen_opc_fp_ip[pc_pos]);
-        tcg_gen_movi_i32(cpu_fpcs, gen_opc_fp_cs[pc_pos]);
-    }
 }

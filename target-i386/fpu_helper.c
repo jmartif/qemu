@@ -605,10 +605,12 @@ void helper_fninit(CPUX86State *env)
     env->fptags[5] = 1;
     env->fptags[6] = 1;
     env->fptags[7] = 1;
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     env->fpip = 0;
     env->fpcs = 0;
     env->fpdp = 0;
     env->fpds = 0;
+#endif
 }
 
 /* BCD ops */
@@ -997,6 +999,7 @@ void helper_fstenv(CPUX86State *env, target_ulong ptr, int omode)
         cpu_stw_data(env, ptr, env->fpuc);
         cpu_stw_data(env, ptr + 4, FPUS(env));
         cpu_stw_data(env, ptr + 8, fptag);
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
         if (omode & PM) {
             /* Protected mode */
             cpu_stl_data(env, ptr + 12, env->fpip);
@@ -1013,11 +1016,18 @@ void helper_fstenv(CPUX86State *env, target_ulong ptr, int omode)
             cpu_stl_data(env, ptr + 24,
                         (env->fpdp >> 4) & 0xffff000); /* fpdp[31..16] */
         }
+#else
+        cpu_stl_data(env, ptr + 12, 0); /* fpip */
+        cpu_stl_data(env, ptr + 16, 0); /* fpcs */
+        cpu_stl_data(env, ptr + 20, 0); /* fpoo */
+        cpu_stl_data(env, ptr + 24, 0); /* fpos */
+#endif
     } else {
         /* 16 bit */
         cpu_stw_data(env, ptr, env->fpuc);
         cpu_stw_data(env, ptr + 2, FPUS(env));
         cpu_stw_data(env, ptr + 4, fptag);
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
         if (omode & PM) {
             /* Protected mode */
             cpu_stw_data(env, ptr + 6, env->fpip);
@@ -1033,23 +1043,35 @@ void helper_fstenv(CPUX86State *env, target_ulong ptr, int omode)
             cpu_stw_data(env, ptr + 12,
                         (env->fpdp >> 4) & 0xf000); /* fpdp[19..16] */
         }
+#else
+        cpu_stw_data(env, ptr + 6, 0);
+        cpu_stw_data(env, ptr + 8, 0);
+        cpu_stw_data(env, ptr + 10, 0);
+        cpu_stw_data(env, ptr + 12, 0);
+#endif
     }
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     env->fpip = 0;
     env->fpcs = 0;
     env->fpdp = 0;
     env->fpds = 0;
+#endif
 }
 
 void helper_fldenv(CPUX86State *env, target_ulong ptr, int omode)
 {
-    int tmp, i, fpus, fptag;
+    int i, fpus, fptag;
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
+    int tmp;
+#endif
 
     if ((omode & BSIZE) == B32) {
         /* 32 bit */
         cpu_set_fpuc(env, cpu_lduw_data(env, ptr));
         fpus = cpu_lduw_data(env, ptr + 4);
         fptag = cpu_lduw_data(env, ptr + 8);
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
         if (omode & PM) {
             env->fpip = cpu_ldl_data(env, ptr + 12);
             tmp = cpu_ldl_data(env, ptr + 16);
@@ -1066,11 +1088,13 @@ void helper_fldenv(CPUX86State *env, target_ulong ptr, int omode)
             env->fpdp = (cpu_ldl_data(env, ptr + 24) << 4) |
                         cpu_lduw_data(env, ptr + 20);
         }
+#endif
     } else {
         /* 16 bit */
         cpu_set_fpuc(env, cpu_lduw_data(env, ptr));
         fpus = cpu_lduw_data(env, ptr + 2);
         fptag = cpu_lduw_data(env, ptr + 4);
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
         if (omode & PM) {
             /* Protected mode  */
             env->fpip = cpu_lduw_data(env, ptr + 6);
@@ -1085,6 +1109,7 @@ void helper_fldenv(CPUX86State *env, target_ulong ptr, int omode)
             env->fpdp = cpu_lduw_data(env, ptr + 12) << 4 |
                         cpu_lduw_data(env, ptr + 10);
         }
+#endif
     }
 
     env->fpstt = (fpus >> 11) & 7;
@@ -1094,12 +1119,14 @@ void helper_fldenv(CPUX86State *env, target_ulong ptr, int omode)
         fptag >>= 2;
     }
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     env->fpip &= 0xffffffff;
     env->fpdp &= 0xffffffff;
     if (!(omode & PM)) {
         env->fpcs = 0;
         env->fpds = 0;
     }
+#endif
 }
 
 void helper_fsave(CPUX86State *env, target_ulong ptr, int omode)
@@ -1175,16 +1202,24 @@ void helper_fxsave(CPUX86State *env, target_ulong ptr, int dsize)
     cpu_stw_data(env, ptr, env->fpuc);
     cpu_stw_data(env, ptr + 2, FPUS(env));
     cpu_stw_data(env, ptr + 4, fptag & 0xff);
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     cpu_stw_data(env, ptr + 6, env->fpop);
+#endif
 
 #ifdef TARGET_X86_64
     if (dsize == B64) {
         /* 64 bit */
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
         cpu_stq_data(env, ptr + 8, env->fpip);
         cpu_stq_data(env, ptr + 16, env->fpdp);
+#else
+        cpu_stq_data(env, ptr + 0x08, 0); /* rip */
+        cpu_stq_data(env, ptr + 0x10, 0); /* rdp */
+#endif
     } else
 #endif
     {
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
         if (dsize == B32) {
             /* 32 bit */
             cpu_stl_data(env, ptr + 8, env->fpip);
@@ -1196,6 +1231,12 @@ void helper_fxsave(CPUX86State *env, target_ulong ptr, int dsize)
         }
         cpu_stw_data(env, ptr + 12, env->fpcs & 0xffff);
         cpu_stw_data(env, ptr + 20, env->fpds & 0xffff);
+#else
+        cpu_stl_data(env, ptr + 0x08, 0); /* eip */
+        cpu_stl_data(env, ptr + 0x0c, 0); /* sel  */
+        cpu_stl_data(env, ptr + 0x10, 0); /* dp */
+        cpu_stl_data(env, ptr + 0x14, 0); /* sel  */
+#endif
     }
 
     addr = ptr + 0x20;
@@ -1249,6 +1290,7 @@ void helper_fxrstor(CPUX86State *env, target_ulong ptr, int dsize)
         env->fptags[i] = ((fptag >> i) & 1);
     }
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     env->fpop = (cpu_lduw_data(env, ptr + 6) >> 5) & 0x7ff;
 
 #ifdef TARGET_X86_64
@@ -1272,6 +1314,7 @@ void helper_fxrstor(CPUX86State *env, target_ulong ptr, int dsize)
         env->fpcs = cpu_lduw_data(env, ptr + 12);
         env->fpds = cpu_lduw_data(env, ptr + 20);
     }
+#endif
 
     addr = ptr + 0x20;
     for (i = 0; i < 8; i++) {
@@ -1302,11 +1345,13 @@ void helper_fxrstor(CPUX86State *env, target_ulong ptr, int dsize)
         }
     }
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     if (dsize == B64) {
         /* 64 bit */
         env->fpip &= 0xffffffff;
         env->fpdp &= 0xffffffff;
     }
+#endif
 }
 
 void cpu_get_fp80(uint64_t *pmant, uint16_t *pexp, floatx80 f)

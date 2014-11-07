@@ -842,8 +842,10 @@ typedef struct CPUX86State {
     uint32_t fpop;
     uint64_t fpip;
     uint64_t fpdp;
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     uint32_t fpcs;
     uint32_t fpds;
+#endif
 
     /* emulator internal variables */
     float_status fp_status;

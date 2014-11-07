@@ -264,6 +264,7 @@ debug_tcg="no"
 debug="no"
 strip_opt="yes"
 tcg_interpreter="no"
+tcg_exception_pointers="no"
 bigendian="no"
 mingw32="no"
 gcov="no"
@@ -926,6 +927,10 @@ for opt do
   ;;
   --enable-tcg-interpreter) tcg_interpreter="yes"
   ;;
+  --disable-tcg-exception-pointers) tcg_exception_pointers="no"
+  ;;
+  --enable-tcg-exception-pointers) tcg_exception_pointers="yes"
+  ;;
   --disable-cap-ng)  cap_ng="no"
   ;;
   --enable-cap-ng) cap_ng="yes"
@@ -1321,6 +1326,7 @@ Advanced options (experts only):
   --disable-rdma           disable RDMA-based migration support
   --enable-rdma            enable RDMA-based migration support
   --enable-tcg-interpreter enable TCG with bytecode interpreter (TCI)
+  --enable-tcg-exception-pointers enable exception pointers support for TCG based emmulation
   --enable-system          enable all system emulation targets
   --disable-system         disable all system emulation targets
   --enable-user            enable supported user emulation targets
@@ -4295,6 +4301,7 @@ echo "Install blobs     $blobs"
 echo "KVM support       $kvm"
 echo "RDMA support      $rdma"
 echo "TCG interpreter   $tcg_interpreter"
+echo "TCG exception pointers $tcg_exception_pointers"
 echo "fdt support       $fdt"
 echo "preadv support    $preadv"
 echo "fdatasync         $fdatasync"
@@ -4649,6 +4656,9 @@ if test "$signalfd" = "yes" ; then
 fi
 if test "$tcg_interpreter" = "yes" ; then
   echo "CONFIG_TCG_INTERPRETER=y" >> $config_host_mak
+fi
+if test "$tcg_exception_pointers" = "yes" ; then
+  echo "CONFIG_TCG_EXCEPTION_POINTERS=y" >> $config_host_mak
 fi
 if test "$fdatasync" = "yes" ; then
   echo "CONFIG_FDATASYNC=y" >> $config_host_mak

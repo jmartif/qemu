@@ -2383,6 +2383,7 @@ void test_fxsave(void)
     printf("fpuc=%04x\n", fp->fpuc);
     printf("fpus=%04x\n", fp->fpus);
     printf("fptag=%04x\n", fp->fptag);
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
 #if defined(__x86_64__)
     printf("fpuip=%04llx\n", (long long unsigned int) fp->mode_64_fpuip);
 #else
@@ -2394,6 +2395,7 @@ void test_fxsave(void)
 #else
     printf("fpudp=%04x\n", fp->mode_non_64_data.fpudp);
     printf("ds_sel=%04x\n", fp->mode_non_64_data.ds_sel);
+#endif
 #endif
     for(i = 0; i < 3; i++) {
         printf("ST%d: " FMT64X " %04x\n",
@@ -2739,10 +2741,12 @@ void test_fnstenv(void)
     printf("fpuc=%04x\n", fp->fpuc);
     printf("fpus=%04x\n", fp->fpus);
     printf("fptag=%04x\n", fp->fptag);
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
     printf("fpuip=%04x\n", fp->fpuip);
     printf("cs_sel=%04x\n", fp->cs_sel);
     printf("fpudp=%04x\n", fp->fpudp);
     printf("ds_sel=%04x\n", fp->ds_sel);
+#endif
 }
 
 void test_conv(void)
