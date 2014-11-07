@@ -137,12 +137,14 @@ static inline int uuid_is_null(const uuid_t uu)
     return memcmp(uu, null_uuid, sizeof(uuid_t)) == 0;
 }
 
+# if defined(CONFIG_VDI_DEBUG)
 static inline void uuid_unparse(const uuid_t uu, char *out)
 {
     snprintf(out, 37, UUID_FMT,
             uu[0], uu[1], uu[2], uu[3], uu[4], uu[5], uu[6], uu[7],
             uu[8], uu[9], uu[10], uu[11], uu[12], uu[13], uu[14], uu[15]);
 }
+# endif
 #endif
 
 typedef struct {
@@ -407,8 +409,7 @@ static int vdi_open(BlockDriverState *bs, QDict *options, int flags,
            We accept them but round the disk size to the next multiple of
            SECTOR_SIZE. */
         logout("odd disk size %" PRIu64 " B, round up\n", header.disk_size);
-        header.disk_size += SECTOR_SIZE - 1;
-        header.disk_size &= ~(SECTOR_SIZE - 1);
+        header.disk_size = ROUND_UP(header.disk_size, SECTOR_SIZE);
     }
 
     if (header.signature != VDI_SIGNATURE) {
@@ -475,7 +476,7 @@ static int vdi_open(BlockDriverState *bs, QDict *options, int flags,
     s->header = header;
 
     bmap_size = header.blocks_in_image * sizeof(uint32_t);
-    bmap_size = (bmap_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    bmap_size = DIV_ROUND_UP(bmap_size, SECTOR_SIZE);
     s->bmap = qemu_try_blockalign(bs->file, bmap_size * SECTOR_SIZE);
     if (s->bmap == NULL) {
         ret = -ENOMEM;
@@ -490,7 +491,7 @@ static int vdi_open(BlockDriverState *bs, QDict *options, int flags,
     /* Disable migration when vdi images are used */
     error_set(&s->migration_blocker,
               QERR_BLOCK_FORMAT_FEATURE_NOT_SUPPORTED,
-              "vdi", bs->device_name, "live migration");
+              "vdi", bdrv_get_device_name(bs), "live migration");
     migrate_add_blocker(s->migration_blocker);
 
     return 0;
@@ -736,10 +737,10 @@ static int vdi_create(const char *filename, QemuOpts *opts, Error **errp)
 
     /* We need enough blocks to store the given disk size,
        so always round up. */
-    blocks = (bytes + block_size - 1) / block_size;
+    blocks = DIV_ROUND_UP(bytes, block_size);
 
     bmap_size = blocks * sizeof(uint32_t);
-    bmap_size = ((bmap_size + SECTOR_SIZE - 1) & ~(SECTOR_SIZE -1));
+    bmap_size = ROUND_UP(bmap_size, SECTOR_SIZE);
 
     memset(&header, 0, sizeof(header));
     pstrcpy(header.text, sizeof(header.text), VDI_TEXT);

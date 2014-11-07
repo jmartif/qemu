@@ -16,6 +16,7 @@
 #include "hw/virtio/virtio-scsi.h"
 #include "qemu/error-report.h"
 #include "qemu/iov.h"
+#include "sysemu/block-backend.h"
 #include <hw/scsi/scsi.h>
 #include <block/scsi.h>
 #include <hw/virtio/virtio-bus.h>
@@ -236,9 +237,9 @@ static int virtio_scsi_do_tmf(VirtIOSCSI *s, VirtIOSCSIReq *req)
     int target;
     int ret = 0;
 
-    if (s->dataplane_started && bdrv_get_aio_context(d->conf.bs) != s->ctx) {
+    if (s->dataplane_started && blk_get_aio_context(d->conf.blk) != s->ctx) {
         aio_context_acquire(s->ctx);
-        bdrv_set_aio_context(d->conf.bs, s->ctx);
+        blk_set_aio_context(d->conf.blk, s->ctx);
         aio_context_release(s->ctx);
     }
     /* Here VIRTIO_SCSI_S_OK means "FUNCTION COMPLETE".  */
@@ -368,7 +369,7 @@ fail:
 void virtio_scsi_handle_ctrl_req(VirtIOSCSI *s, VirtIOSCSIReq *req)
 {
     VirtIODevice *vdev = (VirtIODevice *)s;
-    int type;
+    uint32_t type;
     int r = 0;
 
     if (iov_to_buf(req->elem.out_sg, req->elem.out_num, 0,
@@ -377,8 +378,8 @@ void virtio_scsi_handle_ctrl_req(VirtIOSCSI *s, VirtIOSCSIReq *req)
         return;
     }
 
-    virtio_tswap32s(vdev, &req->req.tmf.type);
-    if (req->req.tmf.type == VIRTIO_SCSI_T_TMF) {
+    virtio_tswap32s(vdev, &type);
+    if (type == VIRTIO_SCSI_T_TMF) {
         if (virtio_scsi_parse_req(req, sizeof(VirtIOSCSICtrlTMFReq),
                     sizeof(VirtIOSCSICtrlTMFResp)) < 0) {
             virtio_scsi_bad_req();
@@ -386,8 +387,8 @@ void virtio_scsi_handle_ctrl_req(VirtIOSCSI *s, VirtIOSCSIReq *req)
             r = virtio_scsi_do_tmf(s, req);
         }
 
-    } else if (req->req.tmf.type == VIRTIO_SCSI_T_AN_QUERY ||
-            req->req.tmf.type == VIRTIO_SCSI_T_AN_SUBSCRIBE) {
+    } else if (type == VIRTIO_SCSI_T_AN_QUERY ||
+               type == VIRTIO_SCSI_T_AN_SUBSCRIBE) {
         if (virtio_scsi_parse_req(req, sizeof(VirtIOSCSICtrlANReq),
                     sizeof(VirtIOSCSICtrlANResp)) < 0) {
             virtio_scsi_bad_req();
@@ -447,7 +448,7 @@ static void virtio_scsi_command_complete(SCSIRequest *r, uint32_t status,
         sense_len = scsi_req_get_sense(r, sense, sizeof(sense));
         sense_len = MIN(sense_len, req->resp_iov.size - sizeof(req->resp.cmd));
         qemu_iovec_from_buf(&req->resp_iov, sizeof(req->resp.cmd),
-                            &req->resp, sense_len);
+                            sense, sense_len);
         req->resp.cmd.sense_len = virtio_tswap32(vdev, sense_len);
     }
     virtio_scsi_complete_cmd_req(req);
@@ -522,9 +523,9 @@ bool virtio_scsi_handle_cmd_req_prepare(VirtIOSCSI *s, VirtIOSCSIReq *req)
         virtio_scsi_complete_cmd_req(req);
         return false;
     }
-    if (s->dataplane_started && bdrv_get_aio_context(d->conf.bs) != s->ctx) {
+    if (s->dataplane_started && blk_get_aio_context(d->conf.blk) != s->ctx) {
         aio_context_acquire(s->ctx);
-        bdrv_set_aio_context(d->conf.bs, s->ctx);
+        blk_set_aio_context(d->conf.blk, s->ctx);
         aio_context_release(s->ctx);
     }
     req->sreq = scsi_req_new(d, req->req.cmd.tag,
@@ -539,7 +540,7 @@ bool virtio_scsi_handle_cmd_req_prepare(VirtIOSCSI *s, VirtIOSCSIReq *req)
         return false;
     }
     scsi_req_ref(req->sreq);
-    bdrv_io_plug(d->conf.bs);
+    blk_io_plug(d->conf.blk);
     return true;
 }
 
@@ -549,7 +550,7 @@ void virtio_scsi_handle_cmd_req_submit(VirtIOSCSI *s, VirtIOSCSIReq *req)
     if (scsi_req_enqueue(sreq)) {
         scsi_req_continue(sreq);
     }
-    bdrv_io_unplug(sreq->dev->conf.bs);
+    blk_io_unplug(sreq->dev->conf.blk);
     scsi_req_unref(sreq);
 }
 
@@ -741,9 +742,18 @@ static void virtio_scsi_hotplug(HotplugHandler *hotplug_dev, DeviceState *dev,
                                 Error **errp)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(hotplug_dev);
+    VirtIOSCSI *s = VIRTIO_SCSI(vdev);
+    SCSIDevice *sd = SCSI_DEVICE(dev);
+
+    if (s->ctx && !s->dataplane_disabled) {
+        if (blk_op_is_blocked(sd->conf.blk, BLOCK_OP_TYPE_DATAPLANE, errp)) {
+            return;
+        }
+        blk_op_block_all(sd->conf.blk, s->blocker);
+    }
 
     if ((vdev->guest_features >> VIRTIO_SCSI_F_HOTPLUG) & 1) {
-        virtio_scsi_push_event(VIRTIO_SCSI(hotplug_dev), SCSI_DEVICE(dev),
+        virtio_scsi_push_event(s, sd,
                                VIRTIO_SCSI_T_TRANSPORT_RESET,
                                VIRTIO_SCSI_EVT_RESET_RESCAN);
     }
@@ -753,11 +763,17 @@ static void virtio_scsi_hotunplug(HotplugHandler *hotplug_dev, DeviceState *dev,
                                   Error **errp)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(hotplug_dev);
+    VirtIOSCSI *s = VIRTIO_SCSI(vdev);
+    SCSIDevice *sd = SCSI_DEVICE(dev);
 
     if ((vdev->guest_features >> VIRTIO_SCSI_F_HOTPLUG) & 1) {
-        virtio_scsi_push_event(VIRTIO_SCSI(hotplug_dev), SCSI_DEVICE(dev),
+        virtio_scsi_push_event(s, sd,
                                VIRTIO_SCSI_T_TRANSPORT_RESET,
                                VIRTIO_SCSI_EVT_RESET_REMOVED);
+    }
+
+    if (s->ctx) {
+        blk_op_unblock_all(sd->conf.blk, s->blocker);
     }
     qdev_simple_device_unplug_cb(hotplug_dev, dev, errp);
 }
@@ -788,10 +804,12 @@ void virtio_scsi_common_realize(DeviceState *dev, Error **errp,
     virtio_init(vdev, "virtio-scsi", VIRTIO_ID_SCSI,
                 sizeof(VirtIOSCSIConfig));
 
-    if (s->conf.num_queues <= 0 || s->conf.num_queues > VIRTIO_PCI_QUEUE_MAX) {
-        error_setg(errp, "Invalid number of queues (= %" PRId32 "), "
+    if (s->conf.num_queues == 0 ||
+            s->conf.num_queues > VIRTIO_PCI_QUEUE_MAX - 2) {
+        error_setg(errp, "Invalid number of queues (= %" PRIu32 "), "
                          "must be a positive integer less than %d.",
-                   s->conf.num_queues, VIRTIO_PCI_QUEUE_MAX);
+                   s->conf.num_queues, VIRTIO_PCI_QUEUE_MAX - 2);
+        virtio_cleanup(vdev);
         return;
     }
     s->cmd_vqs = g_malloc0(s->conf.num_queues * sizeof(VirtQueue *));
@@ -832,7 +850,7 @@ static void virtio_scsi_migration_state_changed(Notifier *notifier, void *data)
         if (s->dataplane_started) {
             return;
         }
-        bdrv_drain_all(); /* complete in-flight non-dataplane requests */
+        blk_drain_all(); /* complete in-flight non-dataplane requests */
         s->dataplane_disabled = false;
     }
 }
