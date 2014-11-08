@@ -427,7 +427,11 @@ static bool fpop_ip_dp_needed(void *opaque)
     X86CPU *cpu = opaque;
     CPUX86State *env = &cpu->env;
 
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
+    return env->fpop != 0 || env->fpip != 0 || env->fpdp != 0 || env->fpcs != 0 || env->fpds != 0;
+#else
     return env->fpop != 0 || env->fpip != 0 || env->fpdp != 0;
+#endif
 }
 
 static const VMStateDescription vmstate_fpop_ip_dp = {
@@ -438,6 +442,10 @@ static const VMStateDescription vmstate_fpop_ip_dp = {
         VMSTATE_UINT32(env.fpop, X86CPU),
         VMSTATE_UINT64(env.fpip, X86CPU),
         VMSTATE_UINT64(env.fpdp, X86CPU),
+#ifdef CONFIG_TCG_EXCEPTION_POINTERS
+        VMSTATE_UINT32(env.fpcs, X86CPU),
+        VMSTATE_UINT32(env.fpds, X86CPU),
+#endif
         VMSTATE_END_OF_LIST()
     }
 };
